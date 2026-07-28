@@ -6,6 +6,33 @@ from typing import Tuple, Optional
 import shutil
 
 
+# --- ASG hardening: CVE-2026-65695 path-traversal fix ---------------------------
+# Upstream (through 1.1.11) passes tool `filename` arguments straight to
+# Document()/save() with no sandboxing, so a caller who influences the filename
+# can read/write arbitrary .docx files anywhere on the host (CWE-22). We confine
+# every file path to a base directory (DOCX_FILES_PATH, default $HOME/GitHub) and
+# reject any path that resolves outside it (absolute escapes, `..`, symlinks).
+def _docx_base_dir() -> str:
+    base = os.environ.get("DOCX_FILES_PATH") or os.path.join(os.path.expanduser("~"), "GitHub")
+    return os.path.realpath(os.path.abspath(base))
+
+
+def secure_path(path: str) -> str:
+    """Confine `path` to the DOCX base dir; raise ValueError on traversal escape."""
+    if path is None or str(path).strip() == "":
+        raise ValueError("empty path")
+    base = _docx_base_dir()
+    os.makedirs(base, exist_ok=True)
+    candidate = path if os.path.isabs(path) else os.path.join(base, path)
+    real = os.path.realpath(os.path.abspath(candidate))
+    if real != base and not real.startswith(base + os.sep):
+        raise ValueError(
+            f"path traversal blocked: {path!r} resolves outside the allowed directory {base!r}"
+        )
+    return real
+# -------------------------------------------------------------------------------
+
+
 def check_file_writeable(filepath: str) -> Tuple[bool, str]:
     """
     Check if a file can be written to.
@@ -16,6 +43,11 @@ def check_file_writeable(filepath: str) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_writeable, error_message)
     """
+    # ASG hardening (CVE-2026-65695): reject traversal before any FS check.
+    try:
+        filepath = secure_path(filepath)
+    except ValueError as exc:
+        return False, str(exc)
     # If file doesn't exist, check if directory is writeable
     if not os.path.exists(filepath):
         directory = os.path.dirname(filepath)
@@ -81,5 +113,7 @@ def ensure_docx_extension(filename: str) -> str:
         Filename with .docx extension
     """
     if not filename.endswith('.docx'):
-        return filename + '.docx'
-    return filename
+        filename = filename + '.docx'
+    # ASG hardening (CVE-2026-65695): confine to the sandbox base dir. This is the
+    # near-universal chokepoint every tool calls, so it blocks traversal globally.
+    return secure_path(filename)

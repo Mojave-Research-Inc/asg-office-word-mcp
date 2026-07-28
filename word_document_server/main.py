@@ -88,6 +88,48 @@ def setup_logging(debug_mode):
 mcp = FastMCP("Word Document Server")
 
 
+# --- ASG hardening: CVE-2026-65695 path-traversal fix ---------------------------
+# Comprehensive boundary defense: wrap mcp.tool so EVERY registered tool has its
+# path-like arguments confined to the sandbox base dir (DOCX_FILES_PATH) before
+# the underlying implementation runs. This covers all tools regardless of whether
+# they internally normalize the filename, closing the CWE-22 traversal at source.
+import functools as _asg_functools
+import inspect as _asg_inspect
+from word_document_server.utils.file_utils import secure_path as _asg_secure_path
+
+_ASG_PATH_ARGS = {
+    "filename", "source_filename", "destination_filename", "output_filename",
+    "image_path", "filepath", "docx_path", "path", "source_path", "dest_path",
+}
+_asg_orig_tool = mcp.tool
+
+
+def _asg_sandboxed_tool(*t_args, **t_kwargs):
+    decorator = _asg_orig_tool(*t_args, **t_kwargs)
+
+    def wrap(fn):
+        try:
+            sig = _asg_inspect.signature(fn)
+        except (TypeError, ValueError):
+            return decorator(fn)
+
+        @_asg_functools.wraps(fn)
+        def guarded(*a, **kw):
+            bound = sig.bind_partial(*a, **kw)
+            for name, val in list(bound.arguments.items()):
+                if name in _ASG_PATH_ARGS and isinstance(val, str) and val.strip():
+                    bound.arguments[name] = _asg_secure_path(val)
+            return fn(*bound.args, **bound.kwargs)
+
+        return decorator(guarded)
+
+    return wrap
+
+
+mcp.tool = _asg_sandboxed_tool
+# -------------------------------------------------------------------------------
+
+
 def register_tools():
     """Register all tools with the MCP server using FastMCP decorators."""
     
