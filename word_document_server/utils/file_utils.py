@@ -13,7 +13,7 @@ import shutil
 # every file path to a base directory (DOCX_FILES_PATH, default $HOME/GitHub) and
 # reject any path that resolves outside it (absolute escapes, `..`, symlinks).
 def _docx_base_dir() -> str:
-    base = os.environ.get("DOCX_FILES_PATH") or os.path.join(os.path.expanduser("~"), "GitHub")
+    base = os.path.expandvars(os.environ.get("DOCX_FILES_PATH") or "") or os.path.join(os.path.expanduser("~"), "GitHub")
     return os.path.realpath(os.path.abspath(base))
 
 
